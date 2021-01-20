@@ -1,0 +1,1 @@
+# Data and code to reproduce ‘Predicting healthcare seeking behavior based on stated readiness to act’
