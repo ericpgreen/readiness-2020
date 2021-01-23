@@ -1,0 +1,1684 @@
+---
+title             : "Predicting healthcare seeking behavior based on stated readiness to act: Development and validation of a prediction model"
+shorttitle        : "Readiness to act"
+
+author: 
+  - name          : "Eric P. Green"
+    affiliation   : "1,2"
+    corresponding : yes    # Define only one corresponding author
+    address       : "Box 90519, Durham, NC 27708"
+    email         : "eric.green@duke.edu"
+  - name          : "Shyam Pradheep"
+    affiliation   : "1"
+  - name          : "Jessica Heinzelman"
+    affiliation   : "2"
+  - name          : "Anne Nyanchoka"
+    affiliation   : "2"
+  - name          : "Daphine Achieng"
+    affiliation   : "2"
+  - name          : "Siddhartha Goyal"
+    affiliation   : "2"
+  - name          : "Laura Cusson"
+    affiliation   : "2"
+  - name          : "Benjamin Bellows"
+    affiliation   : "2"
+
+affiliation:
+  - id            : "1"
+    institution   : "Duke Global Health Institute"
+  - id            : "2"
+    institution   : "Nivi, Inc."
+
+authornote: |
+  All Nivi-affiliated authors disclose a financial conflict of interest as employees or owners of Nivi, Inc., the company behind the askNivi service that generated the data for this analysis. There was no specific funding to support this secondary analysis.
+
+abstract: |
+  **Background.** A starting point of many digital health interventions informed by the Stages of Change Model of behavior change is assessing a person's readiness to change. **Purpose.** In this paper we use the concept of readiness to develop and validate a prediction model of health seeking behavior in the context of family planning. **Methods.** We conducted a secondary analysis of routinely collected, anonymized health data submitted by 4,088 female users of a free health chatbot in Kenya. We developed a prediction model of (future) self-reported action by splitting the data into training and test data sets and further split the training data into 10 folds for cross-validating the hyperparameter tuning step in model selection. We fit nine different classification models and selected the model that maximized the area under the receiver operator curve. We then fit the selected model to the full training dataset and evaluated the performance of this model on the holdout test data. **Results.** The model predicts who will visit a family planning provider in the future with high precision (0.93) and moderate recall (0.75). Using the Stages of Change framework, we concluded that 29 percent of women were in the "Preparation" stage, 21 percent were in the "Contemplation" stage, and 50 percent were in the "Pre-Contemplation stage. **Conclusions.** We demonstrated that it is possible to accurately predict future healthcare seeking behavior based on information learned during the initial encounter. Models like this may help intervention developers to tailor strategies and content in real-time.
+
+  
+appendix          : "appendix.Rmd" 
+bibliography      : ["r-references.bib","readiness.bib"]
+csl               : "apa-numeric-superscript-brackets.csl"
+floatsintext      : yes
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+linenumbers       : no
+mask              : no
+draft             : no
+
+documentclass     : "apa6"
+classoption       : "man"
+output            : papaja::apa6_pdf
+header-includes:
+  - \usepackage{setspace}
+  - \AtBeginEnvironment{tabular}{\singlespacing}
+  - \usepackage{pdflscape}
+  - \newcommand{\blandscape}{\begin{landscape}}
+  - \newcommand{\elandscape}{\end{landscape}}
+  - \raggedbottom
+---
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+```
+
+```{r loading, include = FALSE}
+# load packages
+  library(papaja)
+  library(furniture)
+  library(tidyverse)
+  library(tidyr)
+  library(sysfonts)
+  library(showtext)
+  library(reshape2)
+  library(kableExtra)
+  library(jtools)
+  library(patchwork) 
+  library(ggrepel)
+  library(stargazer)
+  library(MASS)
+  library(bit64)
+  library(tidymodels)
+  library(yardstick)
+  options(yardstick.event_first = FALSE)
+  library(tune)
+  library(brms)
+  library(bayesplot)
+  library(tidybayes)
+  library(here)
+  library(arm)
+  library(latex2exp)
+  library(discrim)
+
+# settings
+  nocomma <- function(x){structure(x,class="nocomma")}
+  knitr::knit_hooks$set(inline = function(x) {
+        if(!inherits(x,"nocomma")) return(prettyNum(x, big.mark=","))
+        if(inherits(x,"nocomma")) return(x)
+        return(x) # default
+      })
+  
+# rounding functions to keep trailing zeros
+  rd0 <- function(y) sprintf("%.0f", round(y, 0))
+  rd1 <- function(y) sprintf("%.1f", round(y, 1))
+  rd2 <- function(y) sprintf("%.2f", round(y, 2))
+  rd3 <- function(y) sprintf("%.3f", round(y, 3))
+  
+# load data
+  load(here::here("anon.RData"))
+  load(here::here("readinessPredict.RData"))
+  load(here::here("readinessFits.RData"))
+  
+# prediction
+  set.seed(2015)
+```
+
+```{r}
+  r_refs(file = "r-references.bib")
+  r_refs(file = "readiness.bib")
+```
+
+With half of the world's population unable to access essential health services, there is a growing recognition of the importance of self-care, a people-centered approach that complements the traditional provider-based model and empowers individuals to take an active role in their own health [@whosc2019]. Self-care interventions include ‘drugs, devices, and diagnostics' that people can use with or without the help of health care providers [@whosc2020]. The proliferation of digital tools, such as smartphones and wearables, along with expanding access to the internet and advances in artificial intelligence, is creating new ways for people to engage in self-care from the privacy and convenience of their home [@dsc2020]. COVID-19 has only amplified the importance of creating remote options for accessing care.
+
+One class of digital health interventions that can scale self-care to millions, at least in principle, is the automated conversational agent, or chatbot. Chatbots work by automatically engaging users in conversations about health topics. Popular channels of delivery include standalone apps, messaging platforms (e.g., SMS, Facebook Messenger, WhatsApp), websites, interactive voice response, and smart speaker virtual assistants such as Amazon Alexa and Google Assistant. There are hundreds of chatbot interventions that specialize in self-care health journeys related to mental health, sexual and reproductive health, weight loss, and other topics [@gibson2018;@hoermann2017;@kocaballi2019]. Most chatbots are rule-based with conversations designed as decision trees, but increasingly conversation designers are turning to machine learning to integrate natural language processing to identify user intent and serve appropriate content.
+
+As the digital self-care market evolves, there is an opportunity to integrate behavior change theory, evidence-based behavior strategies, and clinical guidelines into conversational agents [@arigo2019;@pagoto2013]. The public health and business case for this is promising: interventions based on social and behavioral science theories appear to be more efficacious than atheoretical approaches [@glanz2010], though the evidence is mixed [@davis2015;@aung2020]. In the broader field of digital health, commonly applied theoretical models include the Health Belief Model, Theory of Planned Behavior, Social Cognitive Theory, the Transtheoretical Model, and Self-Determination Theory [@riley2011].
+
+The Transtheoretical Model, also known as the Stages of Change Model [@prochaska1983;@norcross2011], is especially relevant for digital self-care interventions that emphasize the importance of repeated engagement over time. This model posits that behavior change is a process, and individuals can move through several stages: (1) *Pre-Contemplation*, no intention to act; (2) *Contemplation*, awareness of the need to act but no firm commitment to action; (3) *Preparation/Determination*, preparing to follow through on intention to act in the near future; (4) *Action*, acting on intentions; (5) *Maintenance/Relapse*, sustaining behavior change; and (6) *Termination*, a phase characterized by no risk of relapse. Knowing a person's stage of change can help to tailor intervention content [@krebs2010], and clinical techniques such as Motivational Interviewing are commonly used to help people move through these stages [@miller1991].
+
+A starting point of many interventions informed by the Stages of Change Model is assessing a person's stage—their readiness to change. Often this construct is quantified by asking a person to draw a vertical line that intersects a visual analogue scale at the point that represents their readiness to change, or by asking the person to rate her readiness on a scale of 0 (e.g., no thought of changing) to 10 (e.g., taking initial steps toward change). While conceptually face valid, researchers have questioned whether self-reported readiness to change predicts *actual* change [@merrill2015]. Typically, the benchmark for ‘prediction' in studies of readiness to change is a statistically significant correlation between an indicator of readiness and a clinical outcome, regardless of the magnitude of the association. In addition to confusing statistical significance for practical or clinical significance [@greenland2016], this practice also stops short of actual prediction of future behavior, conflating explanation with prediction [@shmueli2010].
+
+Inspired by the concept of readiness to change but aware of these limitations, our objective was to develop a (prognostic) prediction model of action for applied use. Our use case was a digital self-care intervention called askNivi. This free and automated service aims to help people learn about family planning, to identify suitable methods of contraception based on their goals, and to find nearby providers. In this paper, we describe how we used self-reported data on readiness to act, along with other self-reported characteristics and engagement data, to predict who would later report visiting a family planning provider.
+
+# Methods
+
+We conducted a secondary analysis of routinely collected, anonymized health data submitted by askNivi users in Kenya (nationwide) from January 2019 through May 2020.
+
+## Intervention and Data
+
+askNivi is a free service that enables anyone with a mobile phone to ask questions about their health and get information and recommendations through an automated, text-based helper named Nivi. The service is marketed through social media, print media, and face-to-face advertising. The following sections describe how askNivi functioned during the analysis window. Data collection was automated; thus, ascertainment of predictors and the outcome was blinded.
+
+### Model Inputs (Predictors)
+
+#### Onboarding 
+
+People began their engagement with askNivi by asking a question via a dedicated SMS shortcode or Facebook Messenger, by sending an advertised keyword to either channel, or by tapping on a Facebook ad (which launches the Facebook Messenger app). Users sent and received messages at no cost through both channels.
+
+After someone accepted the askNivi terms and conditions, Nivi asked them to provide their age, sex, and location to enable referrals. During the period covered by this analysis, Nivi determined a user's location by asking the person to submit free text and used Google's Geocoding API to map each entry to a set of coordinates. For this analysis, we used these coordinates to identify the user's constituency (a local voting unit in Kenya) and overlaid a high-resolution population raster dataset [@ciesin] to classify user locations by density. Within each constituency we calculated the mean population density value and then divided constituencies into deciles based on mean density. We classified a user as living in a ‘high density' constituency if their location was mapped to one of the top three highest population density deciles.
+
+#### Intent Classification
+
+After a user answered the demographic questions, Nivi prompted them to ask a question (if they had not done so yet), attempted to automatically classify their intent, and routed them to the best automated conversation. When the person's intent was not clear or there was not a matching conversation module in the askNivi library, Nivi put them into a queue to chat with a live human agent. For instance, a user might have asked, "What is the best method of family planning?", and the service would have classified the user's intent as wanting a method recommendation. A user who asked a question like this would have be automatically routed to Nivi's family planning screening module. People bypassed the intent detection step if they engaged with a marketing campaign that was connected directly to a specific conversation. When this happened, the user's intent was defined by the marketing campaign. For instance, if a user clicked on an advertisement about methods of family planning, Nivi inferred that their intent was to get a method recommendation.
+
+#### Family Planning Screening Module
+
+People interested in family planning topics could complete an automated screening to find out which methods of contraception fit their personal goals and preferences. As part of this screening, Nivi collected user responses to questions about marital status, pregnancy status, current and former contraceptive use, and method preferences.
+
+#### Readiness to Act
+
+After issuing method recommendations, Nivi asked users two questions: (1) "How important to you is preventing pregnancy?"; and (2) "How ready are you to visit a facility for family planning in the next 2 weeks?" Users responded to the importance question on an ordinal scale: "Not important", "Less important", "Useful but not a primary goal", "Important", or "Very important". Users also responded to the readiness question on an ordinal scale: "Not ready at all", "Not sure", "Ready", "Very ready", or "Extremely ready".
+
+### Outcome (Action): Visiting a Family Planning Provider
+
+Within two weeks of someone completing a family planning screening, Nivi sent them up to two automated check-in messages asking if they had visited a family planning provider. Users could reply (still at no cost to them) and indicate "yes" they had or "no" they had not. If a user reported a visit, Nivi asked them details about the visit such as the name of the health facility and whether or not they adopted a method. If they indicated they had not yet visited a provider, Nivi asked them to identify the main barrier. Among the standard response options was an option to say that they still planned to go. For the purpose of this analysis, we assumed that no reply means that the user has not visited a provider. 
+
+## Analysis Cohort
+
+For this secondary analysis, we queried the askNivi Kenya database and created a cohort of users who met the following criteria: (a) female; (b) 18 to 49 years old at onboarding; (c) not currently pregnant; (d) engaged with askNivi for the first time between January 1, 2019 and May 30, 2020; (e) completed the automated family planning screening; and (f) were sent a check-in prompt within two weeks of completing the screening. We excluded users with missing data on key demographic and family planning variables. To use the service, women needed access to a mobile phone and had to be able to read and write in English or Swahili.
+
+## Empirical Approach
+
+We used R version 4.0.2 for all analyses [@R-base]. We began by describing the analysis cohort, women's self-reported readiness to visit a family planning provider, and their perceptions about the importance of preventing pregnancy. Then we used the {brms} package (version 2.13.5) to fit two Bayesian models with default priors [@brms]. The first model was a cumulative ordinal regression [@burkner2019] of women's stated readiness to act. The objective was to explore the correlates of stated readiness to act. The second model was a linear regression of action that modeled stated readiness, an ordinal variable, as a monotonic effect [@burkner2020] and adjusted for age based on a causal directed acyclic graph [@textor2016] that identified age as a potential confounding variable. The objective was to estimate the effect of stated readiness on actions taken within the next two weeks.
+
+We then developed and evaluated a prediction model of (future) self-reported action using the `{tidymodels}` suite of machine learning packages [@tidymodels]. Continuous predictors were centered, rescaled, and checked for large absolute correlations. Nominal predictors were converted into binary dummy variables for each level (one hot encoding). We included a zero variance filter to ensure that no input variables contained only a single value.
+
+We split the data into training and test data sets (80/20) and further split the training data into 10 folds for cross-validating the hyperparameter tuning step in model selection. We fit nine different classification models and selected the model that maximized the area under the receiver operator curve. We then fit the selected model to the full training dataset and evaluated the performance of this model on the holdout test data. Classes were predicted with the default threshold of 0.5. Reporting followed the TRIPOD guidelines [see Appendix; @collins2015].
+
+## Ethical Review
+
+The Duke University Institutional Review Board reviewed and approved a study protocol to conduct this secondary data analysis of anonymized data. 
+
+# Results
+
+## Characteristics of the Analysis Cohort
+
+```{r cohortCharacteristics-prep, results='asis'}
+# prep for table
+  anon_ <-
+  anon %>%
+    mutate(fpVisit = factor(fpVisit, 
+                            levels = c(0, 1), 
+                            labels = c("No", "Yes")),
+           fpUse = factor(fpUse, 
+                          levels = c("never used", "current", "past"),
+                          labels = c("Never used", "Currently using", 
+                                     "Not currently using, but used in the past")),
+           fpIntent = factor(fpIntent,
+                             levels = c(0, 1),
+                             labels = c("No", "Yes")),
+           wantLongActing = factor(wantLongActing, 
+                                   levels = c(0, 1),
+                                   labels = c("No", "Yes")),
+           hasPartner = factor(hasPartner,
+                               levels = c(0, 1),
+                               labels = c("No", "Yes")),
+           hasKids = factor(hasKids,
+                            levels = c(0, 1),
+                            labels = c("No", "Yes")),
+           usertype = factor(usertype, 
+                             levels = c("messenger", "sms"), 
+                             labels = c("Facebook Messenger", "SMS")),
+           highDensity = factor(highDensity, 
+                                levels = c("lower density", "highest density"),
+                                labels = c("No", "Yes"))
+    ) %>%
+    dplyr::select(age, fpUse, fpIntent, wantLongActing, 
+                  hasPartner, hasKids, usertype, convosEngaged,
+                  fpVisit, ready, important, highDensity, incomingCt_, denQ)
+
+# paper objects
+  age_M <- mean(anon_$age)
+  currentFP_P <- 
+  anon_ %>% 
+    group_by(fpUse) %>% 
+    summarize(n = n()) %>% 
+    mutate(freq = n / sum(n)) %>% 
+    filter(fpUse=="Currently using") %>% 
+    pull(freq) *100
+  
+  pastFP_P <- 
+  anon_ %>% 
+    group_by(fpUse) %>% 
+    summarize(n = n()) %>% 
+    mutate(freq = n / sum(n)) %>% 
+    filter(fpUse=="Not currently using, but used in the past") %>% 
+    pull(freq) *100
+  
+  delayPrevent_P <- 
+  anon_ %>% 
+    group_by(wantLongActing) %>% 
+    summarize(n = n()) %>% 
+    mutate(freq = n / sum(n)) %>% 
+    filter(wantLongActing=="Yes") %>% 
+    pull(freq) *100
+```
+
+Table \@ref(tab:cohortCharacteristics) summarizes key characteristics of the analysis cohort (*N* = `r nrow(anon_)`). Just over half of women in the cohort said they were not married or living with a partner, approximately 1 out of 3 have children and live in a high density constituency, and the average age is `r round(age_M, 1)` years. In terms of family planning, two-thirds of women said they are currently using a method (`r round(currentFP_P, 0)`%) or used a method in the past but discontinued (`r round(pastFP_P, 0)`%), and most said they wanted to delay or prevent pregnancy for more than one year (`r round(delayPrevent_P, 0)`%). 
+
+\blandscape
+```{r cohortCharacteristics, results='asis'}
+anon_ %>%
+  dplyr::select(-incomingCt_, -denQ) %>%
+    group_by("Visited FP provider" = fpVisit) %>%
+    furniture::table1(
+      "Mean age (SD)" = age, 
+      "Married or living with partner" = hasPartner, 
+      "Has children" = hasKids,
+      "Lives in high density constituency (top 3 decile)" = highDensity,
+      "Channel SMS or Messenger" = usertype, 
+      "Mean number of askNivi conversation modules engaged (SD)" = convosEngaged,
+      "Use of family planning (FP)" = fpUse, 
+      "Expressed FP-related intent at onboarding" = fpIntent, 
+      "Wants to delay/prevent pregnancy for >1 year" = wantLongActing,
+      "Perceived importance of preventing pregnancy" = important,
+      "Stated readiness to visit provider (next 2 weeks)" = ready,
+         output = "latex2",
+         total = TRUE,
+         na.rm = FALSE,
+         type = "condense", 
+         caption = "Characteristics of analysis cohort.",
+         label = "tab:cohortCharacteristics",
+         rounding_perc = 0)
+```
+\elandscape
+
+## Descriptive Exploration of Self-Reported Readiness to Act
+
+```{r reaximp}
+reaximp <-
+anon_ %>% 
+    dplyr::select(ready, important) %>% 
+    mutate(ready = ifelse(ready=="Ready" | 
+                          ready=="Very ready" |
+                          ready=="Extremely ready", 
+                          "Ready", "Not ready"),
+           important = ifelse(important=="Important" | 
+                              important=="Very important", 
+                              "Important", "Not important"),
+           importantNOT = ifelse(important=="Not important", 
+                                 "Not important",
+                                 "Not not important"),
+           ready = factor(ready,
+                          levels = c("Not ready",
+                                     "Ready")),
+           important = factor(important,
+                              levels=c("Not important",
+                                       "Important"))
+           ) %>%
+    group_by(important, ready) %>% 
+    summarize(n = n()) %>%
+    ungroup() %>%
+    mutate(p = (n/sum(n))*100)
+
+reaximpNOT <-
+anon_ %>% 
+    dplyr::select(ready, important) %>% 
+    mutate(ready = ifelse(ready=="Ready" | 
+                          ready=="Very ready" |
+                          ready=="Extremely ready", 
+                          "Ready", "Not ready"),
+           importantNOT = ifelse(important=="Not important", 
+                                 "Not important",
+                                 "Other")
+           ) %>%
+    group_by(importantNOT, ready) %>% 
+    summarize(n = n()) %>%
+    ungroup() %>%
+    mutate(p = (n/sum(n))*100)
+
+important_P <- 
+  reaximp %>%
+  group_by(important) %>%
+  summarize(tot = sum(n)) %>%
+  ungroup() %>%
+  mutate(p = (tot/sum(tot))*100) %>%
+  filter(important == "Important") %>%
+  pull(p)
+
+important_N <- 
+  reaximp %>%
+  group_by(important) %>%
+  summarize(tot = sum(n)) %>%
+  ungroup() %>%
+  mutate(p = (tot/sum(tot))*100) %>%
+  filter(important == "Important") %>%
+  pull(tot)
+
+ready_P <- 
+  reaximp %>%
+  group_by(ready) %>%
+  summarize(tot = sum(n)) %>%
+  ungroup() %>%
+  mutate(p = (tot/sum(tot))*100) %>%
+  filter(ready == "Ready") %>%
+  pull(p)
+
+ready_N <- 
+  reaximp %>%
+  group_by(ready) %>%
+  summarize(tot = sum(n)) %>%
+  ungroup() %>%
+  mutate(p = (tot/sum(tot))*100) %>%
+  filter(ready == "Ready") %>%
+  pull(tot)
+
+reaAmongImp <-
+anon_ %>% 
+    dplyr::select(ready, important) %>% 
+    mutate(ready = ifelse(ready=="Ready" | 
+                          ready=="Very ready" |
+                          ready=="Extremely ready", 
+                          "Ready", "Not ready"),
+           important = ifelse(important=="Important" | 
+                              important=="Very important", 
+                              "Important", "Not important"),
+           ready = factor(ready,
+                          levels = c("Not ready",
+                                     "Ready")),
+           important = factor(important,
+                              levels=c("Not important",
+                                       "Important"))
+           ) %>%
+    group_by(important, ready) %>% 
+    summarize(n = n()) %>%
+    mutate(p = (n/sum(n))*100)
+
+imp_ready_P <- reaAmongImp %>%
+  filter(important=="Important") %>%
+  mutate(total=sum(n),
+         p= (n/total)*100) %>%
+  filter(ready == "Ready" & important=="Important") %>%
+  pull(p)
+```
+
+```{r importance}
+# age 
+  ready_likert_imp_age <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("ageCat")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+
+# fpUse 
+  ready_likert_imp_use <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("fpUse")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# usertype
+  ready_likert_imp_user <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("usertype")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# long acting
+  ready_likert_imp_long <- 
+  anon %>% 
+    mutate(wantLongActing = ifelse(wantLongActing==1, 
+                                   "prevent more 1 year", 
+                                   "prevent less 1 year")) %>%
+    mutate(diss_group = !!rlang::sym("wantLongActing")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# intent
+  ready_likert_imp_intent <- 
+  anon %>% 
+    mutate(fpIntent = ifelse(fpIntent==1, 
+                             "FP Intent", 
+                             "Non-FP intent")) %>%
+    mutate(diss_group = !!rlang::sym("fpIntent")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# location
+  ready_likert_imp_loc <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("highDensity")) %>%
+    dplyr::select(diss_group, important) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, important) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(important)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = important,
+                names_prefix = "imp_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("imp_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("imp_")))) %>%
+    mutate_at(vars(starts_with("imp_")), funs((./total))) %>%
+    dplyr::select(-total)
+
+# combine
+  ready_likert_imp <- 
+  ready_likert_imp_age %>%
+    bind_rows(ready_likert_imp_use) %>%
+    bind_rows(ready_likert_imp_user) %>%
+    bind_rows(ready_likert_imp_long) %>%
+    bind_rows(ready_likert_imp_intent) %>%
+    bind_rows(ready_likert_imp_loc)
+
+# scaling
+  ready_likert_imp$`s.imp_Not important` <- 0-ready_likert_imp$`imp_Not important`-ready_likert_imp$`imp_Less important`-ready_likert_imp$`imp_Useful but not a primary goal`
+
+  ready_likert_imp$`s.imp_Less important` <- 0-ready_likert_imp$`imp_Less important`-ready_likert_imp$`imp_Useful but not a primary goal`
+  
+  ready_likert_imp$`s.imp_Useful but not a primary goal` <- 0-ready_likert_imp$`imp_Useful but not a primary goal`
+  
+  ready_likert_imp$`s.imp_Important` <- 0
+  
+  ready_likert_imp$`s.imp_Very important` <- 0+ready_likert_imp$imp_Important
+  
+  ready_likert_imp$group <- factor(ready_likert_imp$group, 
+                                   levels = c("15-19",
+                                              "20-29",
+                                              "30+",
+                                              "sms",
+                                              "messenger",
+                                              "lower density",
+                                              "highest density",
+                                              "FP intent",
+                                              "Non-FP intent",
+                                              "prevent more 1 year",
+                                              "prevent less 1 year",
+                                              "past",
+                                              "current", 
+                                              "never used"
+                                              ),
+                                   labels = c("age 15-19",
+                                              "age 20-29",
+                                              "age 30+",
+                                              "sms user",
+                                              "messenger user",
+                                              "lives lower density",
+                                              "lives highest density",
+                                              "FP intent",
+                                              "non-FP intent",
+                                              "prevent pregnancy for >1 year",
+                                              "prevent pregnancy for <1 year",
+                                              "used FP in the past",
+                                              "currently using FP",
+                                              "never used FP"
+                                              )
+                                   )
+  
+  nlevels_imp <- length(ready_likert_imp$group)
+  
+# to percents
+  ready_likert_imp[,2:11]<-ready_likert_imp[,2:11]*100
+  mdfr <- melt(ready_likert_imp, id=c("group"))
+  mdfr<-cbind(mdfr[1:(nlevels_imp*5),],mdfr[((nlevels_imp*5)+1):(nlevels_imp*5*2),3])
+  colnames(mdfr)<-c("group","variable","value","start")
+  
+# remove dot in levels
+  mylevels_imp <-c("Not important", 
+                   "Less important", 
+                   "Useful, not primary goal",
+                   "Important", 
+                   "Very important")
+  mdfr$variable <- droplevels(mdfr$variable)
+  levels(mdfr$variable) <- mylevels_imp
+#custom color palette
+  pal<-c("#F17DB1", "#fac3dc", "#e8e8e8", "#b0f5e5", "#4FBFA5") 
+  
+  p_freq_i <- 
+  ggplot(mdfr) +
+    geom_segment(aes(x = group, y = start, xend = group, yend = start+value, 
+                     colour = variable,
+                     text=paste("group: ",group,"<br>Percent: ",value,"%")), 
+                 size = 13) +
+    geom_label(aes(label=str_wrap(round(value, 0),12), 
+                   x=group, y=(start+start+value)/2), color="#575656", size=5) +
+    geom_hline(yintercept = 0, color =c("#646464")) +
+    coord_flip() +
+    scale_color_manual("Response", labels = mylevels_imp, values = pal, 
+                       guide="legend") +
+    labs(title="How important to you is \npreventing pregnancy?", 
+         y="Percent",x="") +
+    scale_y_continuous(breaks=seq(-100,100,25), limits=c(-100,100)) +
+    theme(panel.background = element_rect(fill = "#ffffff"),
+          panel.grid.major = element_line(colour = "#CBCBCB"),
+          legend.position = "bottom",
+          legend.direction = "vertical",
+          legend.title = element_blank(),
+          legend.text = element_text(size = rel(1.5))
+          ) +
+    theme(axis.text = element_text(size = rel(1.5),
+                                   color = "#575656"),
+            plot.title = element_text(size = rel(1.8),
+                                      color = "#575656"))
+  
+  imp_long <- 
+  ready_likert_imp_long %>% 
+    group_by(group) %>% 
+    summarize(sum = sum(imp_Important,`imp_Very important`)*100)
+```
+
+```{r readiness}
+# age 
+  ready_likert_rea_age <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("ageCat")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("rea_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# fpUse 
+  ready_likert_rea_use <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("fpUse")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("rea_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# usertype
+  ready_likert_rea_user <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("usertype")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("rea_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# long acting
+  ready_likert_rea_long <- 
+  anon %>% 
+    mutate(wantLongActing = ifelse(wantLongActing==1, 
+                                   "prevent more 1 year", 
+                                   "prevent less 1 year")) %>%
+    mutate(diss_group = !!rlang::sym("wantLongActing")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# intent
+  ready_likert_rea_intent <- 
+  anon %>% 
+    mutate(fpIntent = ifelse(fpIntent==1, 
+                             "FP Intent", 
+                             "Non-FP intent")) %>%
+    mutate(diss_group = !!rlang::sym("fpIntent")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("rea_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+  
+# location
+  ready_likert_rea_loc <- 
+  anon %>% 
+    mutate(diss_group = !!rlang::sym("highDensity")) %>%
+    dplyr::select(diss_group, ready) %>% 
+    rename(group = diss_group) %>%
+    group_by(group, ready) %>% 
+    summarize(freq = n()) %>% 
+    ungroup() %>% 
+    filter(!is.na(group)) %>%
+    filter(group!="") %>%
+    filter(!is.na(ready)) %>%
+    pivot_wider(id_cols = group, 
+                names_from = ready,
+                names_prefix = "rea_",
+                values_from = freq) %>%
+    mutate_at(vars(starts_with("rea_")), funs(ifelse(is.na(.), 0, .))) %>%
+    mutate(total = rowSums(dplyr::select(., starts_with("rea_")))) %>%
+    mutate_at(vars(starts_with("rea_")), funs((./total))) %>%
+    dplyr::select(-total)
+
+# combine
+  ready_likert_rea <- 
+  ready_likert_rea_age %>%
+    bind_rows(ready_likert_rea_use) %>%
+    bind_rows(ready_likert_rea_user) %>%
+    bind_rows(ready_likert_rea_long) %>%
+    bind_rows(ready_likert_rea_intent) %>% 
+    bind_rows(ready_likert_rea_loc)
+
+# ready 
+  ready_likert_rea$`s.rea_Not ready at all` <- 0-ready_likert_rea$`rea_Not ready at all`-ready_likert_rea$`rea_Not sure`
+
+  ready_likert_rea$`s.rea_Not sure` <- 0-ready_likert_rea$`rea_Not sure`
+  
+  ready_likert_rea$`s.rea_Ready` <- 0
+  
+  ready_likert_rea$`s.rea_Very ready` <- 0+ready_likert_rea$`rea_Ready`
+  
+  ready_likert_rea$`s.rea_Extremely ready` <- 0+ready_likert_rea$`rea_Very ready`+ready_likert_rea$`rea_Ready`
+  
+  ready_likert_rea$group <- factor(ready_likert_rea$group, 
+                                   levels = c("15-19",
+                                              "20-29",
+                                              "30+",
+                                              "sms",
+                                              "messenger",
+                                              "lower density",
+                                              "highest density",
+                                              "FP intent",
+                                              "Non-FP intent",
+                                              "prevent more 1 year",
+                                              "prevent less 1 year",
+                                              "past",
+                                              "current", 
+                                              "never used"
+                                              ),
+                                   labels = c("age 15-19",
+                                              "age 20-29",
+                                              "age 30+",
+                                              "sms user",
+                                              "messenger user",
+                                              "lives lower density",
+                                              "lives highest density",
+                                              "FP intent",
+                                              "non-FP intent",
+                                              "prevent pregnancy for >1 year",
+                                              "prevent pregnancy for <1 year",
+                                              "used FP in the past",
+                                              "currently using FP",
+                                              "never used FP"
+                                              )
+                                   )
+  
+  nlevels_rea <- length(ready_likert_rea$group)
+  
+#to percents
+  ready_likert_rea[,2:11]<-ready_likert_rea[,2:11]*100
+  mdfr <- melt(ready_likert_rea, id=c("group"))
+  mdfr<-cbind(mdfr[1:(nlevels_rea*5),],mdfr[((nlevels_rea*5)+1):(nlevels_rea*5*2),3])
+  colnames(mdfr)<-c("group","variable","value","start")
+#remove dot in levels
+  mylevels_rea <-c("Not ready at all", 
+                   "Not sure", 
+                   "Ready",
+                   "Very ready", 
+                   "Extremely ready")
+  mdfr$variable <- droplevels(mdfr$variable)
+  levels(mdfr$variable) <- mylevels_rea
+#custom color palette
+  pal<-c("#F17DB1", "#fac3dc", "#d5f6ef", "#b0f5e5", "#4FBFA5") 
+  
+  p_freq_r <-
+  ggplot(mdfr) +
+    geom_segment(aes(x = group, y = start, xend = group, yend = start+value, colour = variable,
+                     text=paste("group: ",group,"<br>Percent: ",value,"%")), size = 13) +
+    geom_label(aes(label=str_wrap(round(value, 0),12), 
+                   x=group, y=(start+start+value)/2), color="#575656", size=5) +
+    geom_hline(yintercept = 0, color =c("#646464")) +
+    coord_flip() +
+    scale_color_manual("Response", labels = mylevels_rea, values = pal, guide="legend") +
+    labs(title="How ready are you to visit a \nfacility for FP in the next 2 weeks?", y="Percent",x="") +
+    scale_y_continuous(breaks=seq(-100,100,25), limits=c(-100,100)) +
+    theme(panel.background = element_rect(fill = "#ffffff"),
+          panel.grid.major = element_line(colour = "#CBCBCB"),
+          legend.position = "bottom",
+          legend.direction = "vertical",
+          legend.title = element_blank(),
+          legend.text = element_text(size = rel(1.5))
+          ) +
+    theme(axis.text = element_text(size = rel(1.5),
+                                   color = "#575656"),
+            plot.title = element_text(size = rel(1.8),
+                                      color = "#575656")) 
+  
+  rea_age <- 
+  ready_likert_rea_age %>% 
+    group_by(group) %>% 
+    summarize(sum = sum(rea_Ready,`rea_Very ready`, `rea_Extremely ready`)*100)
+  
+  rea_channel <- 
+  ready_likert_rea_user %>% 
+    group_by(group) %>% 
+    summarize(sum = sum(rea_Ready,`rea_Very ready`, `rea_Extremely ready`)*100)
+  
+  rea_use <- 
+  ready_likert_rea_use %>% 
+    group_by(group) %>% 
+    summarize(sum = sum(rea_Ready,`rea_Very ready`, `rea_Extremely ready`)*100)
+  
+  rea_long <- 
+  ready_likert_rea_long %>% 
+    group_by(group) %>% 
+    summarize(sum = sum(rea_Ready,`rea_Very ready`, `rea_Extremely ready`)*100)
+```
+
+Figure \@ref(fig:imprea) displays the distributions of responses to Nivi's *importance* and *readiness* prompts according to characteristics of users. When asked, "How important to you is preventing pregnancy?", `r round(important_P, 0)` percent of users (`r important_N`/`r nrow(anon)`) said it was "important" or "very important", with little variation by measured characteristics. One exception: compared to women who were seeking short-term protection, a higher percentage of women who said they wanted to prevent pregnancy for at least one year also indicated that preventing pregnancy was important (`r round(imp_long %>% filter(group=="prevent more 1 year") %>% pull(sum), 0)`% vs `r round(imp_long %>% filter(group=="prevent less 1 year") %>% pull(sum), 0)`%).
+
+When asked, "How ready are you to visit a facility for FP in the next two weeks?", `r round(ready_P, 0)` percent of users (`r ready_N`/`r nrow(anon)`) reported being ready to take action. Readiness appears to vary somewhat by age, channel, contraceptive history, and family planning preferences. For instance, compared to adolescents, a higher percentage of women over age 30 said they were ready to visit a provider (`r round(rea_age %>% filter(group=="30+") %>% pull(sum), 0)`% vs `r round(rea_age %>% filter(group=="15-19") %>% pull(sum), 0)`%). Readiness was also more common among Facebook Messenger users (`r round(rea_channel %>% filter(group=="messenger") %>% pull(sum), 0)`% vs `r round(rea_channel %>% filter(group=="sms") %>% pull(sum), 0)`% among SMS users), women currently using contraception (`r round(rea_use %>% filter(group=="current") %>% pull(sum), 0)`% vs `r round(rea_use %>% filter(group=="past") %>% pull(sum), 0)`% among never users), and women wanting to prevent pregnancy for at least one year (`r round(rea_long %>% filter(group=="prevent more 1 year") %>% pull(sum), 0)`% vs `r round(rea_long %>% filter(group=="prevent less 1 year") %>% pull(sum), 0)`% among women seeking shorter-term protection.)
+
+```{r imprea, fig.height=14, fig.width=15, fig.cap="(A) Importance rating and (B) readiness rating by user characteristics. 'Unmet need for FP' is constrained to 'important' or 'very important' responses by definition since the importance variable is part of the unmet need construction.", out.extra='angle=90'}
+  pw_freq <- p_freq_i + p_freq_r
+  pw_freq[[2]] <- pw_freq[[2]] + theme(axis.text.y = element_blank())
+  pw_freq + plot_annotation(tag_levels = 'A')
+```
+
+In Figure \@ref(fig:reaximpP) we cross-tabulate self-reported importance and readiness to understand how these perceptions interact among users. Among the `r round(important_N, 0)` users who said preventing pregnancy is "important" or "very important", only `r round(imp_ready_P, 0)` percent also signaled some degree of readiness to visit a provider. Thus, almost half of women who said preventing pregnancy was an important goal were not yet ready to take action. Motivation to change often preceded stated readiness to change.
+
+```{r reaximpP, fig.height=7, fig.width=10, fig.cap=paste0("Distribution of readiness to visit FP provider by perceived importance of preventing pregnancy (*N* = ", nrow(anon_), ").")}
+
+  anon_ %>%
+    mutate(id = 1:n()) %>%
+    mutate(fpVisit = factor(fpVisit, 
+                            levels = c(0, 1), 
+                            labels = c("No", "Yes"))) %>%
+    dplyr::select(id, important, ready, fpVisit) %>%
+    mutate(lab = ifelse(id==1626, "Visited provider", 
+                        ifelse(id=="1731", "Did not visit", ""))) %>%
+    ggplot(., aes(x=ready, y=important,  
+                  label=lab)) +   
+    geom_jitter(size=3, alpha=.2, color="#4FBFA5") + 
+    
+    theme_minimal() +
+    xlab("\nSelf-reported readiness to act") +
+    theme(axis.title.x = element_text(size = rel(1.8),
+                                      color = "#575656"),
+          axis.text.x = element_text(size = rel(1.5),
+                                     color = "#575656"),
+          axis.text.y = element_text(size = rel(1.5),
+                                     color = "#575656"),
+          plot.title = element_text(size = rel(1.8),
+                                    color = "#575656"),
+          plot.title.position="plot",
+          axis.title.y = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_text(size = rel(1.3),
+                                      color = "#575656"),
+          legend.text = element_text(size = rel(1.1),
+                                     color = "#575656")
+    ) +
+    ggtitle("Perceived importance of acting") 
+```
+
+## Correlates of Self-Reported Readiness to Act
+
+```{r reaimpdv, cache=TRUE, results='hide'}
+readiness <-
+anon %>%
+  mutate(fpIntent = factor(fpIntent, 
+                           levels=c(0, 1),
+                           labels=c("No", "Yes")),
+         #wantLongActing  
+         wantLongActing = factor(wantLongActing, 
+                                 levels=c(0, 1),
+                                 labels=c("No", "Yes")),
+         convosEngaged = rescale(convosEngaged),
+         #age
+         age = rescale(age),
+         hasPartner = factor(hasPartner, 
+                             levels=c(0, 1),
+                             labels=c("No", "Yes")),
+         hasKids = factor(hasKids, 
+                          levels=c(0, 1),
+                          labels=c("No", "Yes")),
+         usertype_FM = if_else(usertype=="messenger", 1, 0),
+         usertype_FM = factor(usertype_FM, 
+                              levels=c(0, 1),
+                              labels=c("No", "Yes")),
+         highDensity = if_else(highDensity=="highest density", 1, 0),
+         highDensity = factor(highDensity, 
+                              levels=c(0, 1),
+                              labels=c("No", "Yes")),
+         neverFP = if_else(fpUse=="never used", 1, 0),
+         neverFP = factor(neverFP, 
+                          levels=c(0, 1),
+                          labels=c("No", "Yes")),
+         important_d = if_else(important=="Important" | 
+                               important=="Very important", 
+                               1, 0),
+         important_d = factor(important_d, 
+                              levels=c(0, 1),
+                              labels=c("Not Important", "Important")),
+         ready_d = if_else(ready=="Ready" | 
+                           ready=="Very ready" |
+                           ready=="Extremely ready", 1, 0)
+  )
+
+m1b.fit <- brm(
+  formula = ready ~ age + fpIntent + wantLongActing + convosEngaged +
+             hasPartner + hasKids + usertype_FM +
+             highDensity + neverFP + important_d,
+  data = readiness,
+  family = cumulative("probit")
+  )
+
+
+m1b.fit.p <- 
+as_tibble(as.matrix(m1b.fit)) %>%
+  rename(`Age^` = b_age) %>%
+  rename(`Has FP-related intent` = b_fpIntentYes) %>%
+  rename(`Wants to prevent pregnancy > 1 year` = b_wantLongActingYes) %>%
+  rename(`Number askNivi conversations^` = b_convosEngaged) %>%
+  rename(`Married or living with partner` = b_hasPartnerYes) %>%
+  rename(`Has children` = b_hasKidsYes) %>%
+  rename(`Used FB Messenger channel (vs SMS)` = b_usertype_FMYes) %>%
+  rename(`Lives in highest density constituency` = b_highDensityYes) %>%
+  rename(`Never used FP method` = b_neverFPYes) %>%
+  rename(`Said preventing pregnancy is important` = b_important_dImportant)
+```
+
+To further explore the correlates of women's stated readiness to act, we fit a Bayesian ordinal regression model (cumulative) with default priors. Figure \@ref(fig:correlatesfig) displays the Markov chain Monte Carlo draws from the posterior distribution of the parameters. Holding constant all other variables, women reported greater stated readiness to act (standard deviations on the latent readiness scale) if they expressed an intent related to family planning, said they wanted to prevent pregnancy for more than one year, were married or living with a partner, had children, contacted askNivi via Facebook Messenger (vs SMS), said preventing pregnancy was important to them, were older, or engaged more deeply with askNivi conversation modules. Perceived importance of preventing pregnancy is the strongest correlate of stated readiness. 
+
+```{r correlatesfig, fig.cap=paste0("Results of a Bayesian ordinal regression model (cumulative) of readiness to act (N=", nrow(m1b.fit$data), "). Plot shows Markov chain Monte Carlo draws from the posterior distribution of the parameters.")}
+
+color_scheme_set("teal")
+bayesplot_theme_set(theme_minimal())
+m1b.fit.p %>%
+  dplyr::select(-starts_with("b_Intercept"), -disc, -lp__) %>%
+  mcmc_areas_ridges(prob = 0.8) +
+  xlab("Standard deviations on the latent readiness scale") +
+  theme(plot.title.position = "plot") + 
+  labs(title="Associations between user characteristics and stated readiness to visit\na family planning provider",
+       subtitle="Posterior distributions of model parameters, 80% intervals",
+       caption = "Note. ^ centered and divided by two standard deviations. FB = Facebook.")
+```
+
+## Association Between Self-Reported Readiness to Act and Visiting a Provider
+
+```{r fpvdv, cache=TRUE, results='hide'}
+fpv <- anon %>%
+  mutate(convosEngaged = rescale(convosEngaged),
+         age = rescale(age),
+         hasPartner = if_else(hasPartner=="has partner", 1, 0),
+         hasKids = if_else(hasKids=="has kids", 1, 0),
+         usertype_FM = if_else(usertype=="messenger", 1, 0),
+         highDensity = if_else(denQ >5, 1, 0),
+         neverFP = if_else(fpUse=="never used", 1, 0),
+         important_d = if_else(important=="Important" | 
+                               important=="Very important", 
+                               1, 0),
+         ready_d = if_else(ready=="Ready" | 
+                           ready=="Very ready" |
+                           ready=="Extremely ready", 1, 0)
+  )
+
+m3.fit <- brm(
+  formula = fpVisit ~ mo(ready) + age,
+  data = fpv
+  )
+
+m3.d.lm.fit <- lm(fpVisit ~ ready_d + age, data = fpv)
+ready_d_t <- summary(m3.d.lm.fit)[["coefficients"]]["ready_d", "t value"]
+ready_d_df <- df.residual(m3.d.lm.fit)
+ready_d_d <- effectsize::t_to_d(ready_d_t, ready_d_df)[[1]]
+ready_d_d_l95 <- effectsize::t_to_d(ready_d_t, ready_d_df)[[3]]
+ready_d_d_u95 <- effectsize::t_to_d(ready_d_t, ready_d_df)[[4]]
+```
+
+```{r, results='hide'}
+  readinessPredicts <- fpv %>%
+    dplyr::select(fpVisit, ready_d) %>%
+    group_by(fpVisit, ready_d) %>% 
+    count()
+
+  readyTP <- pull(readinessPredicts %>% filter(ready_d==1 & fpVisit==1), n)
+  readyPredPos <- sum(pull(readinessPredicts %>% filter(ready_d==1), n))
+  readyPPV <- (readyTP/(readyPredPos))*100
+```
+
+With a better understanding of which measured characteristics of users are linked to greater self-reported readiness to act, we explored the association between stated readiness and a future action: self-reported visits to a family planning provider. We fit a Bayesian linear regression model with default priors, modeling the ordered categorical variable stated readiness as a monotonic effect and adjusting for age. The decision to adjust for age, and only age, was made through the use of a causal directed acyclic graph (see Appendix Figure \@ref(fig:dag)). Figure \@ref(fig:readinessToAction) displays the conditional effects of stated readiness on the probability of visiting a family planning provider. On average, the predicted probability of visiting a provider increases `r round(fixef(m3.fit)[3,1]*100, 1)` percentage points per increase in one stated readiness category. However, stated readiness alone is not sufficient for accurately predicting this future action. Only `r rd0(readyPPV)` percent of women who said they were ready to act later reported visiting a family planning provider.
+
+```{r readinessToAction, fig.cap=paste0("Results of a Bayesian linear regression model of self reported visits to family planning providers (N=", nrow(m3.fit$data), "). Plot shows conditional effects of stated readiness (monotonic) on visits, adjusted for age.")}
+
+  m3.c_eff <- conditional_effects(m3.fit)
+
+  plot(m3.c_eff, plot = FALSE,
+       errorbar_args = list(width=.1),
+       cat_args= list(size=2))[[2]] + 
+  theme_minimal() + 
+  ylim(0,NA) +
+  labs(title="Conditional effects of stated readiness (monotonic)",
+       subtitle = "Dependent variable: Self-reported visit to family planning provider",
+       y = "Predicted probability of visiting provider",
+       x = "",
+       caption = "Note. Model adjusts for age.")
+```
+
+## Predicting Who Will Take Action
+
+```{r}
+# split data
+  fpv_split <- 
+  anon_ %>%
+    dplyr::select(fpVisit,
+                  usertype, hasPartner, hasKids, age, 
+                  fpUse, wantLongActing, fpIntent, 
+                  convosEngaged, ready, important
+                  ) %>%
+    # convert to unordered
+    mutate(ready = factor(ready, ordered=FALSE)) %>%
+    mutate(important = factor(important, ordered=FALSE)) %>%
+    initial_split(prop = 0.8, strata = fpVisit) 
+  
+  fpv_training <- training(fpv_split)
+  fpv_testing  <- testing(fpv_split)
+  
+  fpv_split_compare <- fpv_training %>%
+    mutate(set="Development") %>%
+    bind_rows(fpv_testing) %>%
+    mutate(set = ifelse(is.na(set), "Validation", set))
+
+  fpv_training_cv <- vfold_cv(fpv_training, v = 10, repeats = 1,
+                              strata = fpVisit)
+```
+
+```{r, eval=FALSE}
+
+  all_cores <- parallel::detectCores(logical = FALSE)
+  library(doParallel)
+  cl <- makePSOCKcluster(all_cores-1)
+  registerDoParallel(cl)
+  
+# fpVisit class of interest is last, "Yes"
+  options(yardstick.event_first = FALSE)
+
+# recipe
+  fpv_recipe <-
+  training(fpv_split) %>%
+    recipe(fpVisit ~.) %>%
+    step_corr(all_numeric(), -all_outcomes()) %>%
+    step_center(all_numeric(), -all_outcomes()) %>%
+    step_scale(all_numeric(), -all_outcomes()) %>%
+    step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE) %>%
+    step_zv(all_predictors()) %>%
+    themis::step_upsample(fpVisit, over_ratio = tune())
+    
+  
+# models ======================================================================
+  
+# multinom_glmnet
+# -----------------------------------------------------------------------------
+  
+# model
+  fpv_mod_multinom_glmnet <- 
+    multinom_reg(penalty = tune(), mixture = tune()) %>% 
+    set_engine("glmnet") %>% 
+    set_mode("classification")
+  
+# workflow
+  fpv_wf_multinom_glmnet <- 
+    workflow() %>% 
+    add_model(fpv_mod_multinom_glmnet) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_multinom_glmnet <- dials::parameters(fpv_wf_multinom_glmnet)
+  
+# tune grid
+  fpv_grid_multinom_glmnet <-
+    grid_regular(fpv_par_multinom_glmnet,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_multinom_glmnet <- 
+    fpv_wf_multinom_glmnet %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_multinom_glmnet,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_multinom_glmnet <- 
+    fpv_res_multinom_glmnet %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_multinom_glmnet %>% 
+    show_best(metric = "roc_auc")
+
+  
+# random forest
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_rf <- 
+    rand_forest(trees = tune(), 
+                mtry = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("ranger")
+  
+# workflow
+  fpv_wf_rf <- 
+    workflow() %>% 
+    add_model(fpv_mod_rf) %>% 
+    add_recipe(fpv_recipe)
+  
+# tune grid
+  fpv_grid_rf <-
+    grid_regular(trees(),
+                 mtry(range = c(1, (length(names(fpv_split$data))-1))),
+                 over_ratio(),
+                 levels=5)
+  
+# train and tune model
+  fpv_res_rf <- 
+    fpv_wf_rf %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_rf,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_rf <- 
+    fpv_res_rf %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_rf %>% 
+    show_best(metric = "roc_auc")
+  
+    
+# knn
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_knn <- 
+    nearest_neighbor(neighbors = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("kknn")
+  
+# workflow
+  fpv_wf_knn <- 
+    workflow() %>% 
+    add_model(fpv_mod_knn) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_knn <- dials::parameters(fpv_wf_knn)
+  
+# tune grid
+  fpv_grid_knn <-
+    grid_regular(fpv_par_knn,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_knn <- 
+    fpv_wf_knn %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_knn,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_knn <- 
+    fpv_res_knn %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_knn %>% 
+    show_best(metric = "roc_auc")
+  
+
+# boost_tree
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_bt <- 
+    boost_tree(mode = "classification", 
+               trees = tune(),
+               mtry = tune()) %>%
+    set_engine("xgboost") 
+  
+# workflow
+  fpv_wf_bt <- 
+    workflow() %>% 
+    add_model(fpv_mod_bt) %>% 
+    add_recipe(fpv_recipe)
+  
+# tune grid
+  fpv_grid_bt <-
+    grid_regular(trees(),
+                 mtry(range = c(1, (length(names(fpv_split$data))-1))),
+                 over_ratio(),
+                 levels=5)
+  
+# train and tune model
+  fpv_res_bt <- 
+    fpv_wf_bt %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_bt,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_bt <- 
+    fpv_res_bt %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_bt %>% 
+    show_best(metric = "roc_auc")
+
+  
+# logistic regression
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_klr <- 
+    logistic_reg(mode = "classification", 
+                 penalty = tune()) %>%
+    set_engine("keras") 
+  
+# workflow
+  fpv_wf_klr <- 
+    workflow() %>% 
+    add_model(fpv_mod_klr) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_klr <- dials::parameters(fpv_wf_klr)
+  
+# tune grid
+  fpv_grid_klr <-
+    grid_regular(fpv_par_klr,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_klr <- 
+    fpv_wf_klr %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_klr,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_klr <- 
+    fpv_res_klr %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_klr %>% 
+    show_best(metric = "roc_auc")
+
+  
+# nnet
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_nnet <- 
+    mlp(mode = "classification", 
+        hidden_units = tune(), 
+        penalty = tune(),
+        epochs = tune()) %>%
+    set_engine("nnet")
+  
+# workflow
+  fpv_wf_nnet <- 
+    workflow() %>% 
+    add_model(fpv_mod_nnet) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_nnet <- dials::parameters(fpv_wf_nnet)
+  
+# train and tune model
+  fpv_res_nnet <- 
+    fpv_wf_nnet %>% 
+    tune_bayes(fpv_training_cv,
+               param_info = fpv_par_nnet,
+               iter = 30,
+               control = control_bayes(verbose=TRUE,
+                                       save_pred = TRUE,
+                                       no_improve = 10,
+                                       seed = 123),
+               metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_nnet <- 
+    fpv_res_nnet %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_nnet %>% 
+    show_best(metric = "roc_auc")
+
+  
+# mars
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_mars <- 
+    mars(num_terms = tune(), 
+         prod_degree = tune(), 
+         prune_method = tune()) %>%
+    set_engine("earth") %>%
+    set_mode("classification")
+  
+# workflow
+  fpv_wf_mars <- 
+    workflow() %>% 
+    add_model(fpv_mod_mars) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_mars <- dials::parameters(fpv_wf_mars)
+  
+# tune grid
+  fpv_grid_mars <-
+    grid_regular(fpv_par_mars,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_mars <- 
+    fpv_wf_mars %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_mars,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_mars <- 
+    fpv_res_mars %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_mars %>% 
+    show_best(metric = "roc_auc")
+
+  
+# nb
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_nb <- 
+    naive_Bayes(mode = "classification", 
+                smoothness = tune(), 
+                Laplace = tune()) %>%
+    set_engine("klaR") 
+  
+# workflow
+  fpv_wf_nb <- 
+    workflow() %>% 
+    add_model(fpv_mod_nb) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_nb <- dials::parameters(fpv_wf_nb)
+  
+# tune grid
+  fpv_grid_nb <-
+    grid_regular(fpv_par_nb,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_nb <- 
+    fpv_wf_nb %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_nb,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_nb <- 
+    fpv_res_nb %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_nb %>% 
+    show_best(metric = "roc_auc")
+  
+
+# bagged trees
+# -----------------------------------------------------------------------------
+
+# model 
+  fpv_mod_bag <- 
+    baguette::bag_tree(mode = "classification",
+                       cost_complexity = tune(),
+                       tree_depth = tune(),
+                       min_n = 2) %>%
+    set_engine("rpart")
+  
+# workflow
+  fpv_wf_bag <- 
+    workflow() %>% 
+    add_model(fpv_mod_bag) %>% 
+    add_recipe(fpv_recipe)
+  
+# parameters
+  fpv_par_bag <- dials::parameters(fpv_wf_bag)
+  
+# tune grid
+  fpv_grid_bag <-
+    grid_regular(fpv_par_bag,
+                 levels=5)
+  
+# train and tune model
+  fpv_res_bag <- 
+    fpv_wf_bag %>% 
+    tune_grid(fpv_training_cv,
+              grid = fpv_grid_bag,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc, accuracy, precision, f_meas))
+  
+# select best 
+  fpv_best_bag <- 
+    fpv_res_bag %>%
+    select_best(metric = "roc_auc")
+  
+# show best
+  fpv_res_bag %>% 
+    show_best(metric = "roc_auc")  
+  
+
+# select final model
+# -----------------------------------------------------------------------------
+  
+# finalize training workflow
+  final_wf <- 
+    fpv_wf_klr %>% 
+    finalize_workflow(fpv_best_klr)
+  
+# fit final model 
+  final_fit <- 
+    final_wf %>%
+    last_fit(fpv_split,
+             metrics = metric_set(roc_auc, accuracy, precision, f_meas, 
+                                  sensitivity, specificity)) 
+
+# evaluate test performance
+  final_fit %>%
+    collect_metrics()
+
+# extract predictions
+  final_pred <- 
+  final_fit %>%
+    collect_predictions() 
+  
+# confusion matrix
+  final_pred %>%
+    conf_mat(fpVisit, .pred_class)
+  
+# fitting and using final model
+# http://www.rebeccabarter.com/blog/2020-03-25_machine_learning/#fitting-and-using-your-final-model
+  
+  stopImplicitCluster(cl)
+```
+
+```{r}
+  fpv_metrics <- final_fit %>% collect_metrics()
+  fpv_auc <- fpv_metrics %>% 
+    filter(.metric=="roc_auc") %>% 
+    pull(.estimate)
+  fpv_sens <- fpv_metrics %>% 
+    filter(.metric=="sens") %>% 
+    pull(.estimate)
+  fpv_spec <- fpv_metrics %>% 
+    filter(.metric=="spec") %>% 
+    pull(.estimate)
+  fpv_precision <- fpv_metrics %>% 
+    filter(.metric=="precision") %>% 
+    pull(.estimate)
+  fpv_f1 <- fpv_metrics %>% 
+    filter(.metric=="f_meas") %>% 
+    pull(.estimate)
+  
+  fpv_yes <- table(final_pred$fpVisit)["Yes"]/sum(table(final_pred$fpVisit))
+  fpv_yesPred <- table(final_pred$.pred_class)["Yes"]/sum(table(final_pred$.pred_class))
+  
+  fpv_prauc <- final_fit %>%
+    collect_predictions() %>% 
+    pr_auc(fpVisit, .pred_Yes) %>%
+    pull(.estimate)
+```
+
+To improve our ability to predict who will go on to take action, we incorporated additional information women shared during their initial engagement with askNivi into a prediction model. The model included 10 features: stated readiness plus the covariates shown in Figure \@ref(fig:correlatesfig) (excluding density).  
+
+We split the data (*N*=`r nrow(fpv)`) into training (*N*=`r nrow(fpv)-nrow(final_pred)`, 80%) and test (*N*=`r nrow(final_pred)`, 20%) sets (see Table \@ref(tab:cohortCharacteristics2)) and used 10-fold cross-validation on the training set to tune model hyperparameters and fit nine different classification models. Given the class imbalance (`r rd0(fpv_yes*100)`% later reported visiting a provider), we up-sampled the training data based on the outcome. We then selected the model (and the model hyperparameters) with the best overall area under the receiver operator curve in the cross-validated training data, fit the best model (logistic regression) to the full training dataset, and evaluated performance on the holdout (unseen) test data.
+
+Figure \@ref(fig:roc) shows the receiver operator curve and the precision-recall curve for the final model fit to the test data. Both curves are compared to a no skill classifier and show the model's relative advantage. Given the class imbalance, the precision-recall curve is preferred for its focus on predicting the minority class. The area under the precision recall curve is `r rd2(fpv_prauc)` (compared to a baseline of `r rd2(fpv_yes)`). The area under the receiver operator curve is `r rd2(fpv_auc)`. The model has high precision `r rd2(fpv_precision)` and moderate `r rd2(fpv_sens)` recall, with an F1 score of `r rd2(fpv_f1)`. This means `r rd0(fpv_precision*100)` percent of women classified by the model as future action takers were correctly classified (precision, positive predictive value), and `r rd0(fpv_sens*100)` percent of true future action takers were correctly classified (recall, sensitivity). To assess mean calibration (calibration-in-the-large), we compared the average predicted probability of action with the event rate in the validation dataset. The prevalence of visiting a family planning provider was `r rd0(fpv_yes*100)`%, whereas the average predicted event given by the final model was `r rd0(fpv_yesPred*100)`%. This means that the model overestimates action in general.
+
+```{r roc, fig.cap=paste0("Performance of the trained model of action on the unseen test data (*N*=", nrow(final_pred), ")."), fig.height=3}
+  fpv_roc <-
+  final_fit %>%
+    collect_predictions() %>% 
+    roc_curve(fpVisit, .pred_Yes) %>%
+    ggplot(aes(x=(1-specificity), y=sensitivity)) + 
+      geom_line(color="#4FBFA5") + 
+      geom_abline(intercept = 0, slope=1, linetype="dashed") +
+      theme_minimal() +
+      labs(title="Receiver operator curve") + 
+      theme(plot.title.position = "plot") + 
+      annotate("text", x = 0.15, y = .75, 
+             label = "Logistic",
+             color="#4FBFA5", size=3) +
+      annotate("text", x = 0.75, y = .5, 
+             label = "No skill", size=3) 
+
+  fpv_proc <- 
+  final_fit %>%
+    collect_predictions() %>% 
+    pr_curve(fpVisit, .pred_Yes) %>% 
+    ggplot(aes(x=recall, y=precision)) + 
+      geom_line(color="#4FBFA5") + 
+      geom_hline(yintercept = fpv_yes, linetype="dashed") +
+      theme_minimal() +
+      labs(title="Precision-recall operator curve") +
+      theme(plot.title.position = "plot") +
+      annotate("text", x = 0.3, y = .5, 
+             label = "Logistic",
+             color="#4FBFA5", size=3) +
+      annotate("text", x = .15, y = .05, 
+             label = "No skill", size=3)
+  
+  fpv_roc + fpv_proc
+```
+
+## Identifying Stage of Change
+
+```{r}
+soc <- 
+  final_pred %>%
+    dplyr::select(-fpVisit) %>%
+    left_join(fpv %>%
+        mutate(.row = row_number())) %>%
+    mutate(soc = ifelse(.pred_class=="Yes", "Preparation",
+                 ifelse(ready_d==1 | important_d=="Important", "Contemplation",
+                        "Pre-Contemplation")),
+           soc = factor(soc, 
+                        levels=c("Pre-Contemplation", 
+                                 "Contemplation",
+                                 "Preparation"),
+                        labels=c("Pre-Contemplation", 
+                                 "Contemplation",
+                                 "Preparation")))
+
+  soc_ct <- soc %>%
+    group_by(soc) %>%
+    count()
+  
+  soc_prep <- soc_ct %>% filter(soc=="Preparation") %>% pull(n)
+  soc_con <- soc_ct %>% filter(soc=="Contemplation") %>% pull(n)
+  soc_precon <- soc_ct %>% filter(soc=="Pre-Contemplation") %>% pull(n)
+```
+
+Next we used the model's predictions of future action to aid in classifying women in the test dataset (*N*=`r nrow(soc)`) according to their stage of change (see Figure \@ref(fig:soc)). If the model predicted a woman was going to visit a provider (based her data from her initial encounter with askNivi), we classified her as being in the "Preparation" stage (*N*=`r soc_prep`, `r rd0((soc_prep/nrow(soc))*100)`%). Women predicted not to act were classified as being in the "Contemplation" stage if they stated they were ready to visit a provider or if they said preventing pregnancy was important (*N*=`r soc_con`, `r rd0((soc_con/nrow(soc))*100)`%). All other women were classified as being in the "Pre-Contemplation" stage (*N*=`r soc_precon`, `r rd0((soc_precon/nrow(soc))*100)`%). This approach used only data available at the initial engagement to classify a woman's stage of change.
+
+```{r soc, fig.cap=paste0("Predicted stage of change by stated readiness to act. Test dataset, *N*=", nrow(final_pred), "."), fig.height=6}
+  soc %>%
+    mutate(fpVisit = factor(fpVisit, 
+                            levels = c(0, 1), 
+                            labels = c("No", "Yes"))) %>%
+    dplyr::select(id, soc, ready, fpVisit) %>%
+    ggplot(., aes(x=soc, y=ready, color=fpVisit, alpha=fpVisit)) +   
+    geom_jitter(size=2.5) + 
+    scale_alpha_discrete(range=c(.1, .6),
+                         guide = "none") +
+    theme_minimal() +
+    xlab("\nPredicted stage of change") +
+    theme(axis.title.x = element_text(size = 14,
+                                      color = "#575656"),
+          axis.text.x = element_text(#size = rel(1.5),
+                                     color = "#575656"),
+          axis.text.y = element_text(#size = rel(1.5),
+                                     color = "#575656"),
+          plot.title = element_text(size = 14,
+                                    color = "#575656"),
+          plot.title.position="plot",
+          axis.title.y = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_text(color = "#575656"),
+          legend.text = element_text(color = "#575656")
+    ) +
+    labs(title="Self-reported readiness to act") +
+    scale_color_manual(values = c("#F17DB1", "#4FBFA5"),
+                       name = "Visited a FP provider")
+```
+
+# Discussion
+
+Using data from a sample of `r nrow(fpv)` Kenyan women who completed a family planning screening through the automated askNivi conversational agent, we developed and internally validated a prediction (prognostic) model of healthcare seeking. The inputs to this model are several individual characteristics ascertained at the time of the digital screening, including women's stated readiness to act. Applied to unseen test data, the model predicts who will visit a family planning provider in the future with high precision (`r rd2(fpv_precision)`) and moderate recall (`r rd2(fpv_sens)`).
+
+In this paper we also demonstrate how model predictions can be framed in the Transtheoretical (or Stages of Change) Model of behavior change. We classified women who were predicted to act to be in the "Preparation" stage. For women not predicted to act, we labeled their stage of change ("Contemplation" or "Pre-Contemplation") based on their self-reported data on readiness to act and perceived importance of acting. Applied to the test data, we concluded that `r rd0((soc_prep/nrow(soc))*100)` percent of women were in the "Preparation" stage, `r rd0((soc_con/nrow(soc))*100)` percent were in the "Contemplation" stage, and `r rd0((soc_precon/nrow(soc))*100)` percent were in the "Pre-Contemplation stage. 
+
+This reinforces a takeaway offered by Norcross and colleagues from their original 2011 meta-analysis: Most patients are not ready to act *today*, and our interventions should reflect this reality [@norcross2011]. There is evidence suggesting that tailoring interventions to someone's stage of readiness is effective [@krebs2010;@dijkstra2006;@prochaska2018], and we believe prediction models like the one we describe in this paper can provide an empirically-derived guide for such tailoring. This is a key hypothesis to test in future research [@gibson2018].
+
+Like many other studies of behavioral intention, we also show that a person's stated readiness is correlated with future outcomes. It is common in the readiness to change literature for authors to describe a statistically significant correlation as evidence that readiness "predicts" future outcomes. For instance, a 2018 meta-analysis of 76 psychotherapy studies involving more than 25,000 patients aimed to "assess the ability of stages of change and related readiness measures to *predict* psychotherapy outcomes" [emphasis added] [@krebs2018]. This work updated a prior meta-analysis by the same authors [@norcross2011]. In both analyses, the authors quantified prediction as a standardized effect size (Cohen's *d*) measuring the strength of the association between readiness and outcomes: 0.46 (95% CI 0.35–0.58) in the first meta-analysis and 0.41 (95% CI 0.34–0.48) in the update. (For comparison, we fit a linear model of action with readiness and age and converted the adjusted coefficient for readiness to a Cohen's *d* value of `r rd2(ready_d_d)` with a 95% confidence interval of `r rd2(ready_d_d_l95)` to `r rd2(ready_d_d_u95)`).
+
+On the basis of these results, the authors claimed that "client stages of change *reliably predicted* psychotherapy outcomes" and "stages of change are robustly associated with and *predictive of* outcomes in psychotherapy" [emphasis added] [@krebs2018]. This use of the term "predict" is common in the social and behavioral sciences, but Shmueli argues, and we concur, that it conflates causal explanation with empirical prediction [@shmueli2010]. Altman and Royston make a related point in their paper on validating prognostic models: predicting outcomes for groups of patients is not the same as predicting outcomes for individuals [@altman2000]. As they state, "Usefulness is determined by how well a model works in practice, not by how many zeros there are in the associated P-values." We make this distinction to highlight what we see as a contribution of our paper: the development and validation of an individual prediction model that incorporates self-reported readiness to act. We are not aware of other papers that use readiness to act in this type of prognostic modeling.
+
+## Limitations
+
+While we provide evidence for internal validation, this analysis lacks temporal and external validation [@altman2000]. That is to say we tested model performance on an unseen holdout sample from the analysis cohort (internal), but we did not test the model on data from a cohort from a different time or setting. Additionally, misclassification of the outcome (i.e., visiting a family planning provider) was possible. This outcome was self-reported, and we assumed that women who did not respond to our post-referral prompts did not visit a provider.
+
+## Conclusions
+
+We demonstrated that it is possible to predict future healthcare seeking behavior based on information learned during the initial encounter with an automated conversational agent. Models like this could be applied in production to help tailor strategies and content in real-time. Future work should validate this model with new cohorts and evaluate the impact of intervention tailoring on health behavior and outcomes.
+
+\newpage
+
+# References
+
+\begingroup
+\setlength{\parindent}{-0.5in}
+\setlength{\leftskip}{0.5in}
+
+<div id="refs" custom-style="Bibliography"></div>
+\endgroup
+
+<div custom-style='h1-pagebreak'>Appendix </div>
+

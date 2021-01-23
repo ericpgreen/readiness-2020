@@ -1,0 +1,32 @@
+\blandscape
+```{r cohortCharacteristics2, results='asis'}
+  fpv_split_compare %>%
+    group_by("Data Set" = set) %>%
+    furniture::table1(
+      "Mean age (SD)" = age, 
+      "Married or living with partner" = hasPartner, 
+      "Has children" = hasKids,
+      "Channel SMS or Messenger" = usertype, 
+      "Mean number of askNivi conversation modules engaged (SD)" = convosEngaged,
+      "Use of family planning (FP)" = fpUse, 
+      "Expressed FP-related intent at onboarding" = fpIntent, 
+      "Wants to delay/prevent pregnancy for >1 year" = wantLongActing,
+      "Perceived importance of preventing pregnancy" = important,
+      "Stated readiness to visit provider (next 2 weeks)" = ready,
+      "Self-reported visit to family planning provider" = fpVisit,
+         output = "latex2",
+         total = TRUE,
+         na.rm = FALSE,
+         type = "condense", 
+         caption = "Characteristics of the development and validation data.",
+         label = "tab:cohortCharacteristics2",
+         rounding_perc = 0)
+```
+\elandscape
+
+\newpage
+
+```{r dag, fig.cap="Causal directed acyclic graph to inform the statistical adjustment for the linear regression of action.", out.width='100%'}
+  knitr::include_graphics(here('dagittymodel.png'))
+```
+
